@@ -1,0 +1,23 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# wasm-pack output
+/pkg
+/crates/*/pkg
+
+# Node / SvelteKit UI (added in a later stage)
+node_modules/
+.svelte-kit/
+build/
+dist/
+
+# Real reconciliation exports must never be committed. Only fixtures/ is tracked,
+# and everything in it is synthetic.
+*.csv
+*.csv.gz
+!fixtures/mock_recon_2026.csv.gz
+!fixtures/*.sample.csv
+
+.DS_Store
+Thumbs.db

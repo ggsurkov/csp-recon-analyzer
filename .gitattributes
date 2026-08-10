@@ -1,0 +1,8 @@
+# Source is LF in the repository; Git may check it out as CRLF on Windows.
+* text=auto eol=lf
+
+# Fixtures are byte-exact test input. The parser is tested on BOM placement, CRLF line
+# terminators and gzip member boundaries — any normalisation here silently breaks the
+# thing the tests exist to prove.
+*.gz    binary
+*.csv   -text
