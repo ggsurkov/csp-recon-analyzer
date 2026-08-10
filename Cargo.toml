@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/recon-core"]
+members = ["crates/recon-core", "crates/recon-wasm"]
 
 [workspace.package]
 version = "0.1.0"
