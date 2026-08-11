@@ -2,15 +2,30 @@
 **/*.rs.bk
 Cargo.lock.orig
 
-# wasm-pack output
+# Generated wasm-bindgen output. Rebuilt by `npm run wasm`; never edited by hand.
 /pkg
 /crates/*/pkg
+/apps/web/src/lib/wasm/
 
-# Node / SvelteKit UI (added in a later stage)
+# Demo asset copied out of fixtures/ by `npm run demo`. The .bin suffix keeps static hosts
+# from serving it with Content-Encoding: gzip — see apps/web/scripts/copy-fixture.mjs.
+/apps/web/public/demo/
+
+# Node / Vite UI
 node_modules/
 .svelte-kit/
 build/
 dist/
+.vite/
+
+# Secrets. Nothing in this repository should ever need one, which is exactly why an
+# .env showing up unnoticed would be the dangerous case.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
 
 # Real reconciliation exports must never be committed. Only fixtures/ is tracked,
 # and everything in it is synthetic.

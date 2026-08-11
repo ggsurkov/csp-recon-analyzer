@@ -1,0 +1,31 @@
+[package]
+name = "recon-wasm"
+description = "WebAssembly bindings for recon-core. Analyses a reconciliation export entirely inside the browser tab."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+recon-core = { path = "../recon-core" }
+rust_decimal.workspace = true
+serde.workspace = true
+
+# The binding layer. `report` is deliberately free of these so it can be unit-tested on
+# the host without a browser.
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+rust_decimal_macros.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

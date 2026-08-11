@@ -19,14 +19,16 @@ Early. `recon-core` parses the export and implements one detector.
 |---|---|
 | ✅ | Streaming `.csv.gz` reader (multi-member gzip, BOM, Excel guards, schema drift) |
 | ✅ | `EST_UPLIFT` — Extended Service Terms penalty detection (+3% / +23%) |
+| ✅ | WASM bindings + browser UI (Svelte 5, drag-and-drop, nothing uploaded) |
 | ⬜ | `DUPLICATE_SUBSCRIPTION`, `PROMO_EXPIRED`, `DORMANT_AUTORENEW`, `PRORATION_ANOMALY` |
-| ⬜ | WASM build + browser UI |
 
 ## Quick start
 
 ```bash
-cargo test                                  # 49 tests, runs against the committed fixture
+cargo test                                  # 56 tests, runs against the committed fixture
 python scripts/generate_mock_recon.py       # regenerate fixtures/mock_recon_2026.csv.gz
+
+cd apps/web && npm install && npm run dev   # builds the WASM, then serves the UI
 ```
 
 ```rust
@@ -94,6 +96,34 @@ It is a calendar-driven leak that accrues quietly and forever.
 - Nothing here is medical-grade certainty: ratio-only EST detections are reported at
   `confidence 0.75` and say so.
 
+## The web app
+
+`apps/web` is a Svelte 5 SPA. Drop a file in, get the findings table. The parsing happens
+in a Web Worker running the WASM build of `recon-core` — the file is read from disk into
+the tab and never goes anywhere else.
+
+Two things back that claim up rather than merely stating it:
+
+- **No networking exists in the analysis path.** `recon-wasm` depends on `csv`, `flate2`,
+  `chrono`, `rust_decimal`, `serde`, `js-sys` and `wasm-bindgen`. None of them opens a
+  socket. There is no upload endpoint to disable.
+- **The production build ships a CSP with `connect-src 'self'`**, so even a compromised
+  dependency has nowhere to send anything. Injected at build time from `vite.config.ts`.
+
+### ⚠️ Never serve `.csv.gz` as a static asset
+
+Static hosts — Vite preview, nginx, S3, Netlify, GitHub Pages — see a `.gz` extension and
+answer with `Content-Encoding: gzip`. The browser then inflates the body before `fetch`
+sees it, and **its decoder stops after the first gzip member**. A Partner Center export is
+multi-member, so the app receives the first blob only: in our fixture, 5,349 bytes of an
+11,246-byte file, half the rows missing, no error anywhere.
+
+That is the same data-loss bug `MultiGzDecoder` exists to prevent, reintroduced one layer
+below the parser and invisible from inside it. The demo asset is therefore published as
+`mock_recon_2026.csv.gz.bin`. Anything you host, host opaque.
+
+Files a user drags in are unaffected — `File.arrayBuffer()` returns the bytes off disk.
+
 ## Repository layout
 
 ```
@@ -103,6 +133,12 @@ crates/recon-core/          the parser and detectors
   src/parser.rs             streaming reader, column mapping, drift tolerance
   src/detectors/est.rs      EST_UPLIFT
   tests/parser_test.rs      end-to-end against the fixture
+crates/recon-wasm/          browser bindings
+  src/report.rs             the JSON contract with the UI — host-testable, no wasm types
+  src/lib.rs                parse_recon_bytes(), timing, panic hook
+apps/web/                   Svelte 5 + Vite + Tailwind SPA
+  src/lib/recon.worker.ts   runs the WASM off the main thread
+  src/lib/analyzer.ts       main-thread client
 scripts/generate_mock_recon.py   fixture generator (deterministic, synthetic)
 fixtures/mock_recon_2026.csv.gz  14 rows, every edge case above
 ```
