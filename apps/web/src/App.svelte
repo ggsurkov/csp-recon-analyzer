@@ -1,6 +1,7 @@
 <script lang="ts">
   import { analyzeBytes, analyzeFile } from './lib/analyzer';
   import Dropzone from './lib/components/Dropzone.svelte';
+  import EstExplainer from './lib/components/EstExplainer.svelte';
   import FindingsTable from './lib/components/FindingsTable.svelte';
   import Header from './lib/components/Header.svelte';
   import StatCard from './lib/components/StatCard.svelte';
@@ -17,6 +18,33 @@
   const timing = $derived.by(() => {
     const ms = result?.execution_time_ms ?? 0;
     return ms < 1 ? `${ms.toFixed(2)} ms` : `${Math.round(ms)} ms`;
+  });
+
+  /** Sentences assembled here rather than in the markup, where nesting them hid a stray space. */
+  const leakHint = $derived.by(() => {
+    if (!result) return '';
+    if (!hasFindings) return 'No Extended Service Terms uplift found in this file.';
+
+    const parts = [`Per month, across ${result.reportable_subscription_count} subscription(s).`];
+    if (result.suppressed_subscription_count > 0) {
+      parts.push(
+        `A further ${result.suppressed_monthly.display}/mo across ` +
+          `${result.suppressed_subscription_count} subscription(s) is below the ` +
+          `${result.noise_threshold_monthly.display} noise gate — listed below, ` +
+          `excluded from this figure.`
+      );
+    }
+    return parts.join(' ');
+  });
+
+  const rowsHint = $derived.by(() => {
+    if (!result) return '';
+    const parts = ['Parsed in WebAssembly inside this tab.'];
+    if (result.rows_failed > 0) parts.push(`${result.rows_failed} row(s) were unreadable.`);
+    if (result.row_error_count > 0) {
+      parts.push(`${result.row_error_count} cell(s) failed to parse.`);
+    }
+    return parts.join(' ');
   });
 
   async function run(name: string, work: () => Promise<AnalysisResult>) {
@@ -114,20 +142,12 @@
             label="EST penalty leak"
             value={result.total_est_leak_monthly.display}
             accent="amber"
-            hint={hasFindings
-              ? `Per month, across ${result.reportable_subscription_count} subscription(s). ${
-                  result.suppressed_subscription_count > 0
-                    ? `A further ${result.suppressed_monthly.display}/mo across ${result.suppressed_subscription_count} subscription(s) is below the ${result.noise_threshold_monthly.display} noise gate — listed below, excluded from this figure.`
-                    : ''
-                }`
-              : 'No Extended Service Terms uplift found in this file.'}
+            hint={leakHint}
           />
           <StatCard
             label="Rows processed"
             value={`${result.rows_parsed.toLocaleString()} rows / ${timing}`}
-            hint={`Parsed in WebAssembly inside this tab.${
-              result.rows_failed > 0 ? ` ${result.rows_failed} row(s) were unreadable.` : ''
-            }${result.row_error_count > 0 ? ` ${result.row_error_count} cell(s) failed to parse.` : ''}`}
+            hint={rowsHint}
           />
         </div>
 
@@ -172,6 +192,12 @@
         {/if}
       </section>
     {/if}
+
+    <!--
+      Shown on both views deliberately. Before an analysis it is the explanation of why
+      anyone should bother; after one it is the citation behind the number on screen.
+    -->
+    <EstExplainer />
   </main>
 
   <footer class="border-t border-slate-800 px-6 py-8">
@@ -185,7 +211,12 @@
         <span class="text-slate-400">Confidence:</span> a finding at 0.75 was inferred from the
         price ratio alone because Microsoft did not label the line. Verify before you act on it.
       </p>
-      <p>MIT licensed. The parser core is open — read it before you trust it.</p>
+      <p>
+        MIT licensed. The parser core is open — read it before you trust it.
+        {#if result}
+          <span class="text-slate-600">Analyser build {result.analyzer_version}.</span>
+        {/if}
+      </p>
     </div>
   </footer>
 </div>

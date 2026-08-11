@@ -29,7 +29,7 @@
 
 pub mod report;
 
-pub use report::{AnalysisResult, FindingView, Money};
+pub use report::{AnalysisResult, FindingView, Money, ANALYZER_VERSION};
 
 #[cfg(target_arch = "wasm32")]
 mod bindings {
@@ -65,33 +65,26 @@ mod bindings {
         })
     }
 
-    /// Version of this build, so the UI can show what it is running.
-    #[wasm_bindgen]
-    pub fn version() -> String {
-        env!("CARGO_PKG_VERSION").to_owned()
+    /// High-resolution clock, falling back to `Date.now` where there is no `performance`.
+    ///
+    /// `Date::now` only has millisecond resolution, which reports "0 ms" for any file worth
+    /// demoing, so it is the fallback rather than the default.
+    fn now_ms() -> f64 {
+        performance_now().unwrap_or_else(js_sys::Date::now)
     }
 
-    /// High-resolution clock, reached through `globalThis`.
+    /// `performance.now()`, reached through `globalThis`.
     ///
-    /// `web_sys::window()` is `None` inside a Worker and `Date::now()` only has millisecond
-    /// resolution, which reports "0 ms" for any file worth demoing. This finds
-    /// `performance.now` wherever the module happens to be running and falls back to
-    /// `Date.now` if it is absent.
-    fn now_ms() -> f64 {
+    /// Not via `web_sys::window()`: that is `None` inside a Worker, which is exactly where
+    /// this crate runs. Reflecting off the global finds it wherever the module was loaded.
+    fn performance_now() -> Option<f64> {
         let global = js_sys::global();
-        let performance = js_sys::Reflect::get(&global, &JsValue::from_str("performance"));
-        if let Ok(performance) = performance {
-            if !performance.is_undefined() && !performance.is_null() {
-                if let Ok(now) = js_sys::Reflect::get(&performance, &JsValue::from_str("now")) {
-                    if let Some(now) = now.dyn_ref::<js_sys::Function>() {
-                        if let Some(ms) = now.call0(&performance).ok().and_then(|v| v.as_f64()) {
-                            return ms;
-                        }
-                    }
-                }
-            }
+        let performance = js_sys::Reflect::get(&global, &JsValue::from_str("performance")).ok()?;
+        if performance.is_undefined() || performance.is_null() {
+            return None;
         }
-        js_sys::Date::now()
+        let now = js_sys::Reflect::get(&performance, &JsValue::from_str("now")).ok()?;
+        now.dyn_ref::<js_sys::Function>()?.call0(&performance).ok()?.as_f64()
     }
 }
 

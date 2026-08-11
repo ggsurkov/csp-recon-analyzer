@@ -73,4 +73,6 @@ export interface AnalysisResult {
   warnings: string[];
 
   execution_time_ms: number;
+  /** Build of the analyser behind these figures, e.g. `"0.1.0"`. */
+  analyzer_version: string;
 }

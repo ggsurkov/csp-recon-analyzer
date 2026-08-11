@@ -12,10 +12,19 @@
 //! decimal string plus a preformatted display string — and the UI does no arithmetic at
 //! all. Ordering is decided here, in Rust, so the front end never needs to.
 
+use std::collections::HashSet;
+
 use recon_core::detectors::est::{EstDetector, EstEvidenceKind, EstFinding, EstReport};
 use recon_core::{stream_recon_auto, ParseOptions, ReconRow, RemediationWindow, StreamStats};
 use rust_decimal::Decimal;
 use serde::Serialize;
+
+/// Version of the analyser that produced a result.
+///
+/// Travels with the payload rather than being a second exported function: a figure about
+/// somebody's invoice is worth nothing without knowing which build of the rules produced
+/// it, and coupling the two means they cannot drift apart.
+pub const ANALYZER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// A monetary amount, safe to hand to JavaScript.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -135,6 +144,8 @@ pub struct AnalysisResult {
 
     /// Wall time spent inside WebAssembly, in milliseconds. Set by the binding layer.
     pub execution_time_ms: f64,
+    /// Build of the analyser these figures came from. See [`ANALYZER_VERSION`].
+    pub analyzer_version: String,
 }
 
 /// Parse and analyse a reconciliation export.
@@ -174,8 +185,10 @@ fn build(
     currency: String,
     mixed_currency: bool,
 ) -> AnalysisResult {
-    // The noise gate is decided per subscription, so a line inherits its subscription's verdict.
-    let suppressed_subscriptions: Vec<(&str, &str)> = report
+    // The noise gate is decided per subscription, so a line inherits its subscription's
+    // verdict. A set, not a list: this is probed once per finding, and a file where most
+    // subscriptions fall under the gate would otherwise be quadratic.
+    let suppressed_subscriptions: HashSet<(&str, &str)> = report
         .subscriptions
         .iter()
         .filter(|s| s.below_noise_threshold)
@@ -256,6 +269,7 @@ fn build(
         unknown_columns: stats.unknown_columns,
         warnings,
         execution_time_ms: 0.0,
+        analyzer_version: ANALYZER_VERSION.to_owned(),
     }
 }
 
@@ -363,6 +377,10 @@ mod tests {
         // Four subscriptions carry a finding, but only three are behind the $88.80
         // headline — the fourth is under the gate and counted separately.
         assert_eq!(r.reportable_subscription_count, 3);
+
+        // The build that produced these figures rides along with them.
+        assert_eq!(r.analyzer_version, env!("CARGO_PKG_VERSION"));
+        assert!(!r.analyzer_version.is_empty());
 
         // The unknown 49th column is surfaced rather than swallowed.
         assert_eq!(r.unknown_columns, vec!["NewMicrosoftColumn2026"]);

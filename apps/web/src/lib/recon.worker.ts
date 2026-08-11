@@ -25,16 +25,20 @@ export type WorkerResponse =
 /** Instantiated once and reused; the module is ~330 KB and compiling it is not free. */
 let ready: Promise<unknown> | undefined;
 
-self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
+const scope = self as DedicatedWorkerGlobalScope;
+
+function reply(response: WorkerResponse): void {
+  scope.postMessage(response);
+}
+
+scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { id, bytes } = event.data;
   try {
     ready ??= init({ module_or_path: wasmUrl });
     await ready;
-    const result = parse_recon_bytes(new Uint8Array(bytes));
-    (self as DedicatedWorkerGlobalScope).postMessage({ id, ok: true, result } satisfies WorkerResponse);
+    reply({ id, ok: true, result: parse_recon_bytes(new Uint8Array(bytes)) });
   } catch (error) {
     // Rust throws a JS Error whose message is already a sentence meant for the user.
-    const message = error instanceof Error ? error.message : String(error);
-    (self as DedicatedWorkerGlobalScope).postMessage({ id, ok: false, error: message } satisfies WorkerResponse);
+    reply({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 };
