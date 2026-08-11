@@ -5,7 +5,6 @@ Cargo.lock.orig
 # Generated wasm-bindgen output. Rebuilt by `npm run wasm`; never edited by hand.
 /pkg
 /crates/*/pkg
-/apps/web/src/lib/wasm/
 
 # Demo asset copied out of fixtures/ by `npm run demo`. The .bin suffix keeps static hosts
 # from serving it with Content-Encoding: gzip — see apps/web/scripts/copy-fixture.mjs.
