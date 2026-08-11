@@ -44,7 +44,14 @@
 
       <tbody class="divide-y divide-slate-800">
         {#each findings as finding (finding.record_index)}
-          <tr class="align-top {finding.suppressed ? 'opacity-45' : ''} hover:bg-slate-900/40">
+          <!--
+            Every row renders at full opacity, including sub-threshold ones. Dimming was
+            doing two jobs badly: as a status signal it is invisible to anyone who cannot
+            perceive the contrast step, and at 45% the row read as a rendering fault rather
+            than as a deliberate state. The gate tag in the "Per month" column says it in
+            words instead.
+          -->
+          <tr class="align-top hover:bg-slate-900/40">
             <td class="px-4 py-3">
               <div class="font-medium text-slate-100">{finding.customer_name || '—'}</div>
               <div class="text-xs text-slate-500">row {finding.record_index}</div>
@@ -84,8 +91,12 @@
             <td class="tnum px-4 py-3 text-right font-semibold text-amber-300">
               {finding.monthly_run_rate.display}
               {#if finding.suppressed}
-                <div class="text-xs font-normal text-slate-500">
-                  under the {thresholdDisplay} gate
+                <div class="mt-1">
+                  <span
+                    class="inline-block whitespace-nowrap rounded bg-slate-700/50 px-2 py-0.5 text-xs font-medium text-slate-300"
+                  >
+                    under the {thresholdDisplay} gate
+                  </span>
                 </div>
               {/if}
             </td>
