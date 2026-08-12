@@ -55,6 +55,36 @@ export interface Finding {
   suppressed: boolean;
 }
 
+/**
+ * Stage of an in-flight analysis. Mirrors `report::Phase` — the names are asserted equal
+ * by `phase_names_match_the_typescript_union` in `crates/recon-wasm/src/report.rs`.
+ *
+ * `READING` is emitted by the worker while it streams the file in; the other three come
+ * from inside wasm. On a large export effectively all of the time is `PARSING`.
+ */
+export type Phase = 'READING' | 'PARSING' | 'EST_DETECTION' | 'FINALIZING';
+
+/**
+ * One progress tick. Every field is measured, none is extrapolated.
+ *
+ * There is deliberately no `percent` and no row total: the number of rows in a file is not
+ * knowable until the last one has been read, so anything claiming to be "of N rows"
+ * mid-parse is a guess. `bytesProcessed / totalBytes` is the one honest completion figure,
+ * and the UI labels its row estimate as an estimate.
+ */
+export interface AnalysisProgress {
+  /** Source bytes consumed — compressed bytes for a `.csv.gz`, matching the file's size on disk. */
+  bytesProcessed: number;
+  totalBytes: number;
+  rowsParsed: number;
+  /**
+   * EST lines matched so far. Counts *lines* before the per-subscription rollup and the
+   * noise gate, so the final table can legitimately show fewer.
+   */
+  estFound: number;
+  phase: Phase;
+}
+
 export interface AnalysisResult {
   total_est_leak_monthly: Money;
   suppressed_monthly: Money;

@@ -4,12 +4,15 @@
  * One long-lived worker, keyed requests, so the WASM module is compiled once no matter how
  * many files the user drops.
  */
-import type { AnalysisResult } from './types';
+import type { AnalysisProgress, AnalysisResult } from './types';
 import type { WorkerRequest, WorkerResponse } from './recon.worker';
+
+type ProgressHandler = (progress: AnalysisProgress) => void;
 
 type Pending = {
   resolve: (result: AnalysisResult) => void;
   reject: (error: Error) => void;
+  onProgress?: ProgressHandler;
 };
 
 let worker: Worker | undefined;
@@ -25,8 +28,16 @@ function getWorker(): Worker {
     const message = event.data;
     const entry = pending.get(message.id);
     if (!entry) return;
+
+    // Progress does not settle the request, so the entry stays in the map.
+    if (message.kind === 'progress') {
+      const { id, kind, ...progress } = message;
+      entry.onProgress?.(progress);
+      return;
+    }
+
     pending.delete(message.id);
-    if (message.ok) {
+    if (message.kind === 'done') {
       entry.resolve(message.result as AnalysisResult);
     } else {
       entry.reject(new Error(message.error));
@@ -46,21 +57,32 @@ function getWorker(): Worker {
   return worker;
 }
 
+function submit(request: WorkerRequest, onProgress?: ProgressHandler, transfer: Transferable[] = []) {
+  return new Promise<AnalysisResult>((resolve, reject) => {
+    pending.set(request.id, { resolve, reject, onProgress });
+    getWorker().postMessage(request, transfer);
+  });
+}
+
 /**
  * Analyse the bytes of a `.csv` or `.csv.gz` reconciliation export.
  *
  * The buffer is transferred, not copied, so it is detached on this side once the call
- * returns. Read anything you still need from the `File` before calling.
+ * returns. Prefer {@link analyzeFile} for anything the user picked: it hands the worker a
+ * `File` and never materialises the bytes on this thread at all.
  */
-export function analyzeBytes(bytes: ArrayBuffer): Promise<AnalysisResult> {
+export function analyzeBytes(bytes: ArrayBuffer, onProgress?: ProgressHandler): Promise<AnalysisResult> {
   const id = nextId++;
-  const request: WorkerRequest = { id, bytes };
-  return new Promise<AnalysisResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    getWorker().postMessage(request, [bytes]);
-  });
+  return submit({ id, bytes }, onProgress, [bytes]);
 }
 
-export async function analyzeFile(file: File): Promise<AnalysisResult> {
-  return analyzeBytes(await file.arrayBuffer());
+/**
+ * Analyse a file the user dropped or picked.
+ *
+ * The `File` is handed over as a reference — the worker streams it, so a 1 GB export is
+ * never read into this thread's heap and the page stays interactive throughout.
+ */
+export function analyzeFile(file: File, onProgress?: ProgressHandler): Promise<AnalysisResult> {
+  const id = nextId++;
+  return submit({ id, file }, onProgress);
 }
