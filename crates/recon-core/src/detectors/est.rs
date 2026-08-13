@@ -267,6 +267,16 @@ impl EstDetector {
         &self.policy
     }
 
+    /// Lines matched so far, mid-stream.
+    ///
+    /// This is a *line* count, not the subscription count in the final report: the noise
+    /// gate and the per-subscription rollup only happen in [`finish`](Self::finish). It
+    /// exists so a caller streaming a large file can show progress. Treat it as a running
+    /// tally that may shrink at `finish` once suppression is applied.
+    pub fn finding_count(&self) -> usize {
+        self.findings.len()
+    }
+
     /// Examine one row. Cheap: no allocation unless the row matches.
     pub fn observe(&mut self, row: &ReconRow) {
         if let Some(f) = self.classify(row) {

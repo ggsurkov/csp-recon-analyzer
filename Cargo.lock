@@ -421,6 +421,7 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "wasm-bindgen",
 ]
 

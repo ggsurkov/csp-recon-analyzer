@@ -53,11 +53,15 @@
   ondrop={onDrop}
 >
   <div class="mx-auto max-w-xl space-y-4">
-    <div class="text-4xl" aria-hidden="true">{busy ? '⏳' : '📄'}</div>
+    <!--
+      No busy state here any more: while an analysis runs, App swaps this whole component
+      out for ProgressCard, which reports what is actually happening rather than spinning.
+      `busy` survives only to disable the controls during the brief window before the
+      progress card is revealed.
+    -->
+    <div class="text-4xl" aria-hidden="true">📄</div>
 
-    <h2 class="text-lg font-semibold text-slate-100">
-      {busy ? 'Analysing…' : 'Drop your reconciliation export here'}
-    </h2>
+    <h2 class="text-lg font-semibold text-slate-100">Drop your reconciliation export here</h2>
 
     <p class="text-sm leading-relaxed text-slate-400">
       Partner Center &rarr; Billing &rarr; <span class="text-slate-300">Reconciliation</span>, the
