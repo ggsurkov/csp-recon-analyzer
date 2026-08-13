@@ -18,7 +18,7 @@ Early. `recon-core` parses the export and implements one detector.
 | | |
 |---|---|
 | ✅ | Streaming `.csv.gz` reader (multi-member gzip, BOM, Excel guards, schema drift) |
-| ✅ | `EST_UPLIFT` — Extended Service Terms penalty detection (+3% / +23%) |
+| ✅ | `EST_UPLIFT` — Extended Service Terms surcharge detection (+3% over monthly list) |
 | ✅ | WASM bindings + browser UI (Svelte 5, drag-and-drop, nothing uploaded) |
 | ⬜ | `DUPLICATE_SUBSCRIPTION`, `PROMO_EXPIRED`, `DORMANT_AUTORENEW`, `PRORATION_ANOMALY` |
 
@@ -52,12 +52,30 @@ for sub in report.reportable() {
 
 Until **4 May 2026** a CSP subscription that was neither renewed nor cancelled sat in a
 free 30-day grace period. Microsoft removed that. The same subscription now rolls onto an
-**Extended Service Term** — a monthly term charged at **+3%** over list, or **+23%** when
-the SKU has no monthly plan.
+**Extended Service Term**: it is repriced onto the standard **monthly list price** and
+charged a **3% surcharge** on top of that.
 
 Nothing about the line looks different. Same SKU, same seat count, same customer. The only
 signal is the price, and it is one column away from a column that still shows list price.
 It is a calendar-driven leak that accrues quietly and forever.
+
+### The 3% and the ~23% are different numbers
+
+Three percent is the whole surcharge. Invoices move by far more than that because the
+annual discount goes with the annual term: a commitment running ~20% under monthly list,
+repriced to monthly list **plus 3%**, lands as an effective **~23–28%** increase against
+the previous cycle.
+
+That larger figure is a cross-cycle comparison and is **not observable inside one row** —
+`UnitPrice` on the line is monthly list. So the only ratio this detector recognises within
+a single line is `1.03`, and the policy table carries no `1.23` band. A line sitting 23%
+above its own `UnitPrice` is a reprice, a promo expiry, or a catalogue change; calling it
+an EST fee overstates the finding roughly eightfold.
+
+When a line declares EST but `UnitPrice` is *not* monthly list — commonly because it still
+carries the pre-EST annual rate — the base is derived as `EffectiveUnitPrice / 1.03` and
+the finding is marked `declared_not_corroborated` at `confidence 0.90`. We report the
+surcharge, never the partner's discount loss dressed up as a Microsoft fee.
 
 ## What the parser handles that a spreadsheet does not
 

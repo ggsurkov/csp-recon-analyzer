@@ -45,7 +45,11 @@ export interface Finding {
 
   confidence: string;
   confidence_label: string;
-  evidence_kind: 'declared_and_priced' | 'declared' | 'price_ratio';
+  evidence_kind:
+    | 'declared_and_priced'
+    | 'declared'
+    | 'declared_not_corroborated'
+    | 'price_ratio';
   price_adjustment_description: string;
 
   remediation_window: 'NOW' | 'AT_RENEWAL' | 'NEVER';

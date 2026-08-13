@@ -134,10 +134,12 @@
           </h1>
           <p class="leading-relaxed text-slate-400">
             Since <span class="text-slate-200">4 May 2026</span> a CSP subscription that is neither
-            renewed nor cancelled no longer gets a free grace period. It rolls onto a monthly term
-            at <span class="font-semibold text-amber-300">+3%</span>, or
-            <span class="font-semibold text-amber-300">+23%</span> when the SKU has no monthly plan.
-            The line looks identical to last month's. Only the price moved.
+            renewed nor cancelled no longer gets a free grace period. It is repriced onto monthly
+            list and charged a <span class="font-semibold text-amber-300">+3%</span> Extended Service
+            Term surcharge — which lands as an effective
+            <span class="font-semibold text-amber-300">~23%+</span> jump on anything coming off an
+            annual commitment, because the annual discount goes with it. The line looks identical to
+            last month's. Only the price moved.
           </p>
         </div>
 
@@ -228,7 +230,7 @@
             <p class="font-medium text-slate-200">No EST uplift in this export.</p>
             <p class="mt-1">
               That is a real result, not a failure to look — {result.rows_parsed.toLocaleString()} rows
-              were checked against the +3% and +23% rates in force from 4 May 2026.
+              were checked against the +3% surcharge in force from 4 May 2026.
             </p>
           </div>
         {/if}
