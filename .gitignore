@@ -5,7 +5,6 @@ Cargo.lock.orig
 # Generated wasm-bindgen output. Rebuilt by `npm run wasm`; never edited by hand.
 /pkg
 /crates/*/pkg
-/apps/web/src/lib/wasm/
 
 # Python bytecode from scripts/ (generate_1gb_recon.py imports the schema from
 # generate_mock_recon.py, which materialises a __pycache__ next to them).
