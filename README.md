@@ -109,6 +109,10 @@ Two things back that claim up rather than merely stating it:
   socket. There is no upload endpoint to disable.
 - **The production build ships a CSP with `connect-src 'self'`**, so even a compromised
   dependency has nowhere to send anything. Injected at build time from `vite.config.ts`.
+- **Nothing is fetched at analysis time at all.** The WASM module is compiled while the
+  page loads, and the demo fixture is inlined into the bundle as base64. Once the page is
+  open you can pull the network cable: dropping a file and pressing "Try with the demo
+  file" both still work, because neither one issues a request.
 
 ### ⚠️ Never serve `.csv.gz` as a static asset
 
@@ -119,8 +123,10 @@ multi-member, so the app receives the first blob only: in our fixture, 5,349 byt
 11,246-byte file, half the rows missing, no error anywhere.
 
 That is the same data-loss bug `MultiGzDecoder` exists to prevent, reintroduced one layer
-below the parser and invisible from inside it. The demo asset is therefore published as
-`mock_recon_2026.csv.gz.bin`. Anything you host, host opaque.
+below the parser and invisible from inside it. This app now sidesteps it entirely: the demo
+fixture is compiled into the bundle as base64 (`src/lib/demo-file.ts`) rather than served,
+so no host ever gets the chance to re-encode it. If you do host a `.gz` yourself, host it
+under an opaque extension.
 
 Files a user drags in are unaffected — `File.arrayBuffer()` returns the bytes off disk.
 

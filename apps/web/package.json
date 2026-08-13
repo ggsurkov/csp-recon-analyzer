@@ -6,9 +6,8 @@
   "description": "Browser-only analyser for Microsoft Partner Center reconciliation exports.",
   "scripts": {
     "wasm": "wasm-pack build ../../crates/recon-wasm --target web --out-dir ../../apps/web/src/lib/wasm --out-name recon_wasm --release",
-    "demo": "node scripts/copy-fixture.mjs",
-    "prebuild": "npm run wasm && npm run demo",
-    "predev": "npm run wasm && npm run demo",
+    "prebuild": "npm run wasm",
+    "predev": "npm run wasm",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

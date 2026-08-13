@@ -7,7 +7,8 @@
  * and the UI stays responsive.
  *
  * This worker makes exactly two network requests, both same-origin and both static assets
- * of this app: the WASM glue module and the `.wasm` binary. The recon bytes are passed in
+ * of this app: the WASM glue module and the `.wasm` binary. Both happen while the worker is
+ * starting up, not when a file is dropped — see {@link ready}. The recon bytes are passed in
  * from the page and never leave this thread.
  *
  * ## Why the file arrives as a `File` and not an `ArrayBuffer`
@@ -31,6 +32,10 @@ export interface WorkerRequest {
 }
 
 export type WorkerResponse =
+  /** WASM is compiled and resident. From here on the analyser needs no network at all. */
+  | { kind: 'ready' }
+  /** WASM could not be loaded. The worker is alive but cannot analyse anything. */
+  | { kind: 'init-error'; error: string }
   | ({ id: number; kind: 'progress' } & AnalysisProgress)
   | { id: number; kind: 'done'; result: unknown }
   | { id: number; kind: 'error'; error: string };
@@ -57,14 +62,41 @@ const READ_CHUNK = 8 * 1024 * 1024;
  */
 const MIN_POST_INTERVAL_MS = 60;
 
-/** Instantiated once and reused; the module is ~330 KB and compiling it is not free. */
-let ready: Promise<unknown> | undefined;
-
 const scope = self as DedicatedWorkerGlobalScope;
 
 function post(response: WorkerResponse): void {
   scope.postMessage(response);
 }
+
+/** Rust throws JS `Error`s whose message is already a sentence meant for the user. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Compilation starts the moment this worker is spawned — not when a file arrives.
+ *
+ * Fetching the glue module and the `.wasm` binary lazily, on the first drop, puts both
+ * requests at the worst possible moment: the tool's whole claim is that it works with the
+ * network switched off, and that is exactly when someone drops a file. With nothing in the
+ * HTTP cache the fetch fails and the analysis dies as `NetworkError`/`Failed to fetch` —
+ * a network error from a tool that says it never uses the network.
+ *
+ * Doing it here means the two requests happen while the page is loading, in the same breath
+ * as its own scripts. After that the compiled module is resident in this worker's memory
+ * for the rest of the session and no later analysis touches the network, online or not.
+ *
+ * Instantiated once and reused; the module is ~330 KB and compiling it is not free.
+ */
+const ready: Promise<unknown> = init({ module_or_path: wasmUrl });
+
+// Announce the outcome unprompted. The page has no other way to know whether the analyser
+// can run, and attaching handlers here also marks the rejection as observed, so a failure
+// with no file in flight does not surface as an unhandled rejection.
+void ready.then(
+  () => post({ kind: 'ready' }),
+  (error: unknown) => post({ kind: 'init-error', error: describe(error) })
+);
 
 /**
  * Streams a `File` into the wasm-side buffer, reporting READING progress.
@@ -137,7 +169,9 @@ function loadBytes(id: number, bytes: ArrayBuffer): void {
 scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const { id, file, bytes } = event.data;
   try {
-    ready ??= init({ module_or_path: wasmUrl });
+    // Normally settled long before the first drop. Awaited anyway so that a file arriving
+    // during the first few hundred milliseconds queues behind the compile instead of
+    // calling into an uninitialised module.
     await ready;
 
     if (file) {
@@ -169,9 +203,14 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     const result = parse_input(onProgress, ROW_INTERVAL);
     post({ id, kind: 'done', result });
   } catch (error) {
-    // Rust throws a JS Error whose message is already a sentence meant for the user.
     // Drop any partially-read file: without this an abandoned 1 GB read stays resident.
-    input_clear();
-    post({ id, kind: 'error', error: error instanceof Error ? error.message : String(error) });
+    // Safe even when the failure was the compile itself — the wasm exports are stubs that
+    // throw, and this is inside the catch either way.
+    try {
+      input_clear();
+    } catch {
+      // Nothing was loaded because nothing could be. The original error is the useful one.
+    }
+    post({ id, kind: 'error', error: describe(error) });
   }
 };
