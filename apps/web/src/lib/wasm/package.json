@@ -1,0 +1,24 @@
+{
+  "name": "recon-wasm",
+  "type": "module",
+  "collaborators": [
+    "Georgy <ggsurkov@gmail.com>"
+  ],
+  "description": "WebAssembly bindings for recon-core. Analyses a reconciliation export entirely inside the browser tab.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ggsurkov/csp-recon-analyzer"
+  },
+  "files": [
+    "recon_wasm_bg.wasm",
+    "recon_wasm.js",
+    "recon_wasm.d.ts"
+  ],
+  "main": "recon_wasm.js",
+  "types": "recon_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
