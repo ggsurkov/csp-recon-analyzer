@@ -12,7 +12,10 @@
 //! decimal string plus a preformatted display string — and the UI does no arithmetic at
 //! all. Ordering is decided here, in Rust, so the front end never needs to.
 
+use std::cell::Cell;
 use std::collections::HashSet;
+use std::io::Read;
+use std::rc::Rc;
 
 use recon_core::detectors::est::{EstDetector, EstEvidenceKind, EstFinding, EstReport};
 use recon_core::{stream_recon_auto, ParseOptions, ReconRow, RemediationWindow, StreamStats};
@@ -148,22 +151,136 @@ pub struct AnalysisResult {
     pub analyzer_version: String,
 }
 
+/// Where an in-flight analysis has got to.
+///
+/// Four phases because four things actually happen, not to pad a progress bar: bytes are
+/// pulled off the decoder, rows are parsed and classified in one pass, the detector rolls
+/// lines up per subscription and applies the noise gate, then the payload is built and
+/// ordered. `PARSING` is where all the time goes on a large file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Phase {
+    /// Bytes are being pulled in; no row has been handed over yet.
+    Reading,
+    /// Streaming rows through the parser and the detector.
+    Parsing,
+    /// `EstDetector::finish` — per-subscription rollup and the noise gate.
+    EstDetection,
+    /// Building, sorting and serialising the payload.
+    Finalizing,
+}
+
+impl Phase {
+    /// The wire name, matching the `Phase` union in `apps/web/src/lib/types.ts`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Reading => "READING",
+            Phase::Parsing => "PARSING",
+            Phase::EstDetection => "EST_DETECTION",
+            Phase::Finalizing => "FINALIZING",
+        }
+    }
+}
+
+/// One progress tick.
+///
+/// Every field is a fact already known, never an extrapolation: `bytes_processed` is what
+/// the decoder has actually consumed of the *source* bytes, so it is comparable with the
+/// file size the user sees on disk, and it is what the percentage should be computed from.
+/// Row counts cannot be turned into a percentage here — the total is unknowable until the
+/// last row is read — so the UI estimates that itself, and says that it is an estimate.
+/// Field names cross as camelCase, unlike [`AnalysisResult`]: this object is consumed by
+/// hand-written UI code rather than mirrored field-for-field from Rust, and `bytesProcessed`
+/// is what reads naturally there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub bytes_processed: u64,
+    pub total_bytes: u64,
+    pub rows_parsed: u64,
+    /// EST lines matched so far. Pre-rollup and pre-noise-gate, so it can exceed the
+    /// finding count in the finished report. See [`EstDetector::finding_count`].
+    pub est_found: u64,
+    pub phase: Phase,
+}
+
+/// Counts bytes handed out of a slice.
+///
+/// Wrapping the *source* rather than counting decompressed output is deliberate: for a
+/// `.csv.gz` the user's sense of "how far through" is the compressed size, which is what
+/// the file manager showed them. The reader downstream is buffered, so the count advances
+/// in 64 KiB steps and leads the row callback by at most one buffer.
+struct CountingReader<'a> {
+    inner: &'a [u8],
+    consumed: Rc<Cell<u64>>,
+}
+
+impl Read for CountingReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.consumed.set(self.consumed.get() + n as u64);
+        Ok(n)
+    }
+}
+
 /// Parse and analyse a reconciliation export.
 ///
 /// Accepts gzip (including multi-member) or plain CSV; the format is decided from the
 /// magic bytes, not the file name. Returns a human-readable message on failure — it goes
 /// straight into the UI.
 pub fn analyze(bytes: &[u8]) -> Result<AnalysisResult, String> {
+    analyze_with_progress(bytes, 0, |_| {})
+}
+
+/// [`analyze`], reporting progress as it goes.
+///
+/// `on_progress` fires at most once every `row_interval` rows, plus once on entry to each
+/// phase and once at the end. `row_interval` of 0 means phase transitions only.
+///
+/// The callback is invoked from inside the parse loop, so it must be cheap. Anything that
+/// can wait — a `postMessage`, a DOM write — should be throttled by the caller on top of
+/// this; the interval here bounds how often the question is asked, not how expensive the
+/// answer is.
+pub fn analyze_with_progress<F>(
+    bytes: &[u8],
+    row_interval: u64,
+    mut on_progress: F,
+) -> Result<AnalysisResult, String>
+where
+    F: FnMut(&Progress),
+{
     if bytes.is_empty() {
         return Err("That file is empty.".into());
     }
 
+    let total_bytes = bytes.len() as u64;
+    let consumed = Rc::new(Cell::new(0u64));
     let mut est = EstDetector::new();
     let mut currency = String::new();
     let mut mixed_currency = false;
 
+    let mut tick = |phase: Phase, rows: u64, est_found: usize, consumed: u64| {
+        on_progress(&Progress {
+            // Never report more than the file holds: the final buffered read can run past
+            // the last row, and a bar that shows 101% undermines every other number here.
+            bytes_processed: consumed.min(total_bytes),
+            total_bytes,
+            rows_parsed: rows,
+            est_found: est_found as u64,
+            phase,
+        });
+    };
+
+    tick(Phase::Reading, 0, 0, 0);
+
+    // Next row count at which to report. Rows are counted here rather than read back from
+    // `StreamStats`, which only exists once the stream has finished.
+    let mut rows_seen = 0u64;
+    let mut next_report = row_interval;
+    let reader = CountingReader { inner: bytes, consumed: Rc::clone(&consumed) };
+
     let options = ParseOptions::default();
-    let stats = stream_recon_auto(bytes, &options, |row: &ReconRow| {
+    let stats = stream_recon_auto(reader, &options, |row: &ReconRow| {
         if !row.currency.is_empty() {
             if currency.is_empty() {
                 currency = row.currency.clone();
@@ -172,10 +289,19 @@ pub fn analyze(bytes: &[u8]) -> Result<AnalysisResult, String> {
             }
         }
         est.observe(row);
+
+        rows_seen += 1;
+        if row_interval > 0 && rows_seen >= next_report {
+            next_report = rows_seen + row_interval;
+            tick(Phase::Parsing, rows_seen, est.finding_count(), consumed.get());
+        }
     })
     .map_err(|e| format!("Could not read that file: {e}"))?;
 
+    tick(Phase::EstDetection, stats.rows_parsed, est.finding_count(), consumed.get());
     let report = est.finish();
+
+    tick(Phase::Finalizing, stats.rows_parsed, report.findings.len(), consumed.get());
     Ok(build(report, stats, currency, mixed_currency))
 }
 
@@ -442,6 +568,118 @@ mod tests {
         // 2.30 * 20 = 46.00
         assert_eq!(r.total_est_leak_monthly.display, "$46.00");
         assert_eq!(r.findings[0].rate_label, "+23%");
+    }
+
+    /// A CSV with `rows` data rows, all of them EST +23% lines worth well over the gate.
+    fn est_csv(rows: usize) -> String {
+        let mut s = String::from(
+            "CustomerId,SubscriptionId,ChargeType,EffectiveUnitPrice,UnitPrice,\
+             BillableQuantity,Currency,ChargeStartDate,ChargeEndDate,TermAndBillingCycle\r\n",
+        );
+        for i in 0..rows {
+            s.push_str(&format!(
+                "C{i},S{i},cycleCharge,'12.30,'10.00,'20,USD,2026-07-01,2026-07-31,\
+                 \"Monthly term, Monthly billing\"\r\n"
+            ));
+        }
+        s
+    }
+
+    fn collect_progress(bytes: &[u8], interval: u64) -> (Vec<Progress>, AnalysisResult) {
+        let mut seen = Vec::new();
+        let result = analyze_with_progress(bytes, interval, |p| seen.push(*p)).unwrap();
+        (seen, result)
+    }
+
+    #[test]
+    fn progress_reports_every_phase_even_for_a_tiny_file() {
+        // 14 rows with a 25k interval: the row trigger never fires, so this is the phase
+        // transitions alone. A file too small to tick must still reach a terminal state.
+        let (seen, _) = collect_progress(FIXTURE, 25_000);
+        let phases: Vec<Phase> = seen.iter().map(|p| p.phase).collect();
+        assert_eq!(phases, vec![Phase::Reading, Phase::EstDetection, Phase::Finalizing]);
+
+        let last = seen.last().unwrap();
+        assert_eq!(last.rows_parsed, 14);
+        assert_eq!(last.bytes_processed, last.total_bytes, "must finish at 100%");
+    }
+
+    #[test]
+    fn progress_ticks_while_parsing_and_never_goes_backwards() {
+        let csv = est_csv(1_000);
+        let (seen, result) = collect_progress(csv.as_bytes(), 100);
+
+        let parsing: Vec<&Progress> = seen.iter().filter(|p| p.phase == Phase::Parsing).collect();
+        assert_eq!(parsing.len(), 10, "1000 rows at one tick per 100");
+
+        for pair in seen.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            assert!(b.rows_parsed >= a.rows_parsed, "rows went backwards: {a:?} -> {b:?}");
+            assert!(b.bytes_processed >= a.bytes_processed, "bytes went backwards");
+            assert!(b.est_found >= a.est_found, "est count went backwards");
+        }
+
+        // The tally the user watched has to land on the number the report states.
+        assert_eq!(seen.last().unwrap().rows_parsed, result.rows_parsed);
+        assert_eq!(seen.last().unwrap().est_found as usize, result.findings.len());
+    }
+
+    #[test]
+    fn bytes_processed_is_bounded_by_the_file_size() {
+        // The buffered reader pulls 64 KiB at a time and will have swallowed the whole
+        // file long before the last row is handed over. Reporting >100% is not an option.
+        let csv = est_csv(500);
+        let (seen, _) = collect_progress(csv.as_bytes(), 10);
+        let total = csv.len() as u64;
+        for p in &seen {
+            assert_eq!(p.total_bytes, total);
+            assert!(p.bytes_processed <= total, "{} > {total}", p.bytes_processed);
+        }
+        assert_eq!(seen.last().unwrap().bytes_processed, total);
+    }
+
+    #[test]
+    fn a_zero_interval_asks_only_at_phase_boundaries() {
+        let csv = est_csv(500);
+        let (seen, _) = collect_progress(csv.as_bytes(), 0);
+        assert!(seen.iter().all(|p| p.phase != Phase::Parsing));
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn progress_does_not_change_the_result() {
+        let csv = est_csv(50);
+        let quiet = analyze(csv.as_bytes()).unwrap();
+        let (_, loud) = collect_progress(csv.as_bytes(), 1);
+        assert_eq!(quiet.total_est_leak_monthly.value, loud.total_est_leak_monthly.value);
+        assert_eq!(quiet.rows_parsed, loud.rows_parsed);
+        assert_eq!(quiet.findings.len(), loud.findings.len());
+    }
+
+    #[test]
+    fn the_progress_object_keys_are_the_ones_the_ui_reads() {
+        let json = serde_json::to_value(Progress {
+            bytes_processed: 1,
+            total_bytes: 2,
+            rows_parsed: 3,
+            est_found: 4,
+            phase: Phase::Parsing,
+        })
+        .unwrap();
+        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["bytesProcessed", "estFound", "phase", "rowsParsed", "totalBytes"]);
+    }
+
+    #[test]
+    fn phase_names_match_the_typescript_union() {
+        // These strings are the wire contract with apps/web/src/lib/types.ts.
+        let names: Vec<String> = [Phase::Reading, Phase::Parsing, Phase::EstDetection, Phase::Finalizing]
+            .iter()
+            .map(|p| serde_json::to_string(p).unwrap())
+            .collect();
+        assert_eq!(names, vec!["\"READING\"", "\"PARSING\"", "\"EST_DETECTION\"", "\"FINALIZING\""]);
+        assert_eq!(Phase::EstDetection.as_str(), "EST_DETECTION");
     }
 
     #[test]

@@ -26,6 +26,8 @@ console_error_panic_hook = "0.1"
 
 [dev-dependencies]
 rust_decimal_macros.workspace = true
+# Only to assert the serialised `Phase` names still match the TypeScript union.
+serde_json.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

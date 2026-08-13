@@ -7,9 +7,10 @@ Cargo.lock.orig
 /crates/*/pkg
 /apps/web/src/lib/wasm/
 
-# Demo asset copied out of fixtures/ by `npm run demo`. The .bin suffix keeps static hosts
-# from serving it with Content-Encoding: gzip — see apps/web/scripts/copy-fixture.mjs.
-/apps/web/public/demo/
+# Python bytecode from scripts/ (generate_1gb_recon.py imports the schema from
+# generate_mock_recon.py, which materialises a __pycache__ next to them).
+__pycache__/
+*.pyc
 
 # Node / Vite UI
 node_modules/
@@ -40,3 +41,9 @@ Thumbs.db
 #agents
 CLAUDE.md
 .claude/*
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.workspace

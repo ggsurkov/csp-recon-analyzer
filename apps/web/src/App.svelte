@@ -1,16 +1,46 @@
 <script lang="ts">
-  import { analyzeBytes, analyzeFile } from './lib/analyzer';
+  import { fade, fly } from 'svelte/transition';
+  import { analyzeBytes, analyzeFile, warmUpAnalyzer } from './lib/analyzer';
+  import { DEMO_FILE_NAME, readDemoFile } from './lib/demo-file';
   import Dropzone from './lib/components/Dropzone.svelte';
   import EstExplainer from './lib/components/EstExplainer.svelte';
   import FindingsTable from './lib/components/FindingsTable.svelte';
   import Header from './lib/components/Header.svelte';
+  import ProgressCard from './lib/components/ProgressCard.svelte';
   import StatCard from './lib/components/StatCard.svelte';
-  import type { AnalysisResult } from './lib/types';
+  import type { AnalysisProgress, AnalysisResult } from './lib/types';
 
   let result = $state<AnalysisResult | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let fileName = $state('');
+  let progress = $state<AnalysisProgress | null>(null);
+
+  /**
+   * The demo file analyses in single-digit milliseconds. Showing the progress card for that
+   * long is a flash of layout, which looks like a glitch rather than feedback — so the card
+   * only appears once the work has proved it will take long enough to be worth watching.
+   */
+  const PROGRESS_REVEAL_DELAY_MS = 150;
+  let showProgress = $state(false);
+  let revealTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Compile the analyser as the page loads, not when a file lands on the drop zone.
+   *
+   * This is what makes the offline claim true rather than nearly true. The worker's two
+   * module fetches happen now, alongside the page's own assets, and the compiled module
+   * then lives in worker memory for the session — so a drop with the network disconnected
+   * runs exactly like a drop with it connected. Started here, unawaited: the rest of the
+   * page does not depend on it.
+   */
+  let analyzerReady = $state(false);
+  let analyzerError = $state<string | null>(null);
+
+  warmUpAnalyzer().then(
+    () => (analyzerReady = true),
+    (e: unknown) => (analyzerError = e instanceof Error ? e.message : String(e))
+  );
 
   const hasFindings = $derived((result?.findings.length ?? 0) > 0);
 
@@ -47,40 +77,42 @@
     return parts.join(' ');
   });
 
-  async function run(name: string, work: () => Promise<AnalysisResult>) {
+  async function run(name: string, work: (report: (p: AnalysisProgress) => void) => Promise<AnalysisResult>) {
     busy = true;
     error = null;
     result = null;
+    progress = null;
     fileName = name;
+
+    clearTimeout(revealTimer);
+    showProgress = false;
+    revealTimer = setTimeout(() => (showProgress = true), PROGRESS_REVEAL_DELAY_MS);
+
     try {
-      result = await work();
+      // Assigning the whole object once per tick is the entire update path: `$state` is
+      // deep-reactive, the card reads it through `$derived`, and Svelte batches the DOM
+      // write into a microtask. Nothing here loops or retains — the previous tick is
+      // garbage the moment it is replaced.
+      result = await work((p) => (progress = p));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
+      clearTimeout(revealTimer);
+      showProgress = false;
       busy = false;
+      progress = null;
     }
   }
 
   function onFile(file: File) {
-    void run(file.name, () => analyzeFile(file));
+    void run(file.name, (report) => analyzeFile(file, report));
   }
 
   function onDemo() {
-    void run('mock_recon_2026.csv.gz', async () => {
-      // Same-origin static asset shipped with the app. Nothing is sent anywhere.
-      //
-      // The `.bin` extension is load-bearing: served as `.csv.gz`, static hosts set
-      // `Content-Encoding: gzip`, the browser inflates the body before `fetch` sees it,
-      // and its decoder stops at the first gzip member — silently delivering half the
-      // rows. See scripts/copy-fixture.mjs.
-      const response = await fetch('demo/mock_recon_2026.csv.gz.bin');
-      if (!response.ok) {
-        throw new Error(
-          `Could not load the demo file (HTTP ${response.status}). Run \`npm run demo\` to copy it into public/.`
-        );
-      }
-      return analyzeBytes(await response.arrayBuffer());
-    });
+    // The bytes are compiled into the bundle, so this reads them out of memory and hands
+    // them straight to the worker. No request, no server, nothing that can be offline —
+    // see lib/demo-file.ts.
+    void run(DEMO_FILE_NAME, (report) => analyzeBytes(readDemoFile(), report));
   }
 
   function reset() {
@@ -109,7 +141,13 @@
           </p>
         </div>
 
-        <Dropzone onfile={onFile} ondemo={onDemo} {busy} />
+        {#if showProgress}
+          <div in:fade={{ duration: 150 }}>
+            <ProgressCard {progress} {fileName} />
+          </div>
+        {:else}
+          <Dropzone onfile={onFile} ondemo={onDemo} {busy} ready={analyzerReady} initError={analyzerError} />
+        {/if}
 
         {#if error}
           <div
@@ -122,7 +160,11 @@
         {/if}
       </section>
     {:else}
-      <section class="space-y-8">
+      <!--
+        The results replace a bar that just reached 100%, so they rise into place rather
+        than appearing instantly — it reads as the same object continuing, not a new screen.
+      -->
+      <section class="space-y-8" in:fly={{ y: 8, duration: 250, delay: 60 }}>
         <div class="flex flex-wrap items-baseline justify-between gap-4">
           <div>
             <h1 class="text-2xl font-semibold tracking-tight text-slate-50">Analysis</h1>
