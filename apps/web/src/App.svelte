@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
-  import { analyzeBytes, analyzeFile } from './lib/analyzer';
+  import { analyzeBytes, analyzeFile, warmUpAnalyzer } from './lib/analyzer';
+  import { DEMO_FILE_NAME, readDemoFile } from './lib/demo-file';
   import Dropzone from './lib/components/Dropzone.svelte';
   import EstExplainer from './lib/components/EstExplainer.svelte';
   import FindingsTable from './lib/components/FindingsTable.svelte';
@@ -23,6 +24,23 @@
   const PROGRESS_REVEAL_DELAY_MS = 150;
   let showProgress = $state(false);
   let revealTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Compile the analyser as the page loads, not when a file lands on the drop zone.
+   *
+   * This is what makes the offline claim true rather than nearly true. The worker's two
+   * module fetches happen now, alongside the page's own assets, and the compiled module
+   * then lives in worker memory for the session — so a drop with the network disconnected
+   * runs exactly like a drop with it connected. Started here, unawaited: the rest of the
+   * page does not depend on it.
+   */
+  let analyzerReady = $state(false);
+  let analyzerError = $state<string | null>(null);
+
+  warmUpAnalyzer().then(
+    () => (analyzerReady = true),
+    (e: unknown) => (analyzerError = e instanceof Error ? e.message : String(e))
+  );
 
   const hasFindings = $derived((result?.findings.length ?? 0) > 0);
 
@@ -91,21 +109,10 @@
   }
 
   function onDemo() {
-    void run('mock_recon_2026.csv.gz', async (report) => {
-      // Same-origin static asset shipped with the app. Nothing is sent anywhere.
-      //
-      // The `.bin` extension is load-bearing: served as `.csv.gz`, static hosts set
-      // `Content-Encoding: gzip`, the browser inflates the body before `fetch` sees it,
-      // and its decoder stops at the first gzip member — silently delivering half the
-      // rows. See scripts/copy-fixture.mjs.
-      const response = await fetch('demo/mock_recon_2026.csv.gz.bin');
-      if (!response.ok) {
-        throw new Error(
-          `Could not load the demo file (HTTP ${response.status}). Run \`npm run demo\` to copy it into public/.`
-        );
-      }
-      return analyzeBytes(await response.arrayBuffer(), report);
-    });
+    // The bytes are compiled into the bundle, so this reads them out of memory and hands
+    // them straight to the worker. No request, no server, nothing that can be offline —
+    // see lib/demo-file.ts.
+    void run(DEMO_FILE_NAME, (report) => analyzeBytes(readDemoFile(), report));
   }
 
   function reset() {
@@ -139,7 +146,7 @@
             <ProgressCard {progress} {fileName} />
           </div>
         {:else}
-          <Dropzone onfile={onFile} ondemo={onDemo} {busy} />
+          <Dropzone onfile={onFile} ondemo={onDemo} {busy} ready={analyzerReady} initError={analyzerError} />
         {/if}
 
         {#if error}
