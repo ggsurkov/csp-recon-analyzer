@@ -148,7 +148,10 @@ mod bindings {
     /// The buffer is consumed. Whether this succeeds or fails, the bytes are released
     /// before returning, so a finished analysis does not sit on a gigabyte.
     #[wasm_bindgen]
-    pub fn parse_input(on_progress: &js_sys::Function, row_interval: u32) -> Result<JsValue, JsValue> {
+    pub fn parse_input(
+        on_progress: &js_sys::Function,
+        row_interval: u32,
+    ) -> Result<JsValue, JsValue> {
         let bytes = INPUT.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
 
         let started = now_ms();

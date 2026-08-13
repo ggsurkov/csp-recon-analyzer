@@ -1,34 +1,58 @@
-//! `EST_UPLIFT` — Extended Service Terms penalty detection.
+//! `EST_UPLIFT` — Extended Service Terms surcharge detection.
 //!
 //! # What changed
 //!
 //! Until 4 May 2026 a CSP subscription that was neither renewed nor cancelled sat in a free
 //! 30-day grace period. Microsoft removed that. A subscription in the same state now rolls
-//! onto an **Extended Service Term**: a monthly term charged at a premium over list.
-//!
-//! * **+3%** when the SKU has a monthly plan available.
-//! * **+23%** when it does not.
+//! onto an **Extended Service Term**: it is repriced onto the standard **monthly list
+//! price** and charged a **3% surcharge** on top of that.
 //!
 //! Nobody notices. The subscription keeps working, the seat count does not move, and the
-//! invoice grows by a few percent on a line that looks identical to last month's. It is a
-//! calendar-driven, entirely predictable leak, which is exactly why it is worth detecting.
+//! invoice grows on a line that looks identical to last month's. It is a calendar-driven,
+//! entirely predictable leak, which is exactly why it is worth detecting.
+//!
+//! # The 3% and the ~23% are different numbers, and only one of them is on the line
+//!
+//! Three percent is the whole surcharge. The reason a partner's invoice moves by far more
+//! than 3% is the annual discount they just lost: an annual commitment runs roughly 20%
+//! under monthly list, so monthly list plus 3% measured against a previously discounted
+//! annual rate is an effective jump of roughly 23–28%, depending on the SKU's discount
+//! spread.
+//!
+//! That jump is a *cross-cycle* comparison — this month's rate against last month's — and it
+//! is not observable inside a single row. `UnitPrice` on the line is monthly list. So the
+//! only ratio recognised within one line is `1.03`, and [`EstPolicy::table`] deliberately
+//! carries no `1.23` band: a line sitting 23% above its own `UnitPrice` is not an EST
+//! surcharge, and treating it as one invents money that was never charged.
+//!
+//! What this reports is therefore the surcharge alone. The discount loss is real and much
+//! larger, but it is a renewal-pricing consequence rather than a fee, and folding it into
+//! `EST_UPLIFT` would overstate every finding by roughly eightfold.
 //!
 //! # How this detects it
 //!
-//! Two independent signals, because Microsoft does not always populate the prose field:
+//! `PriceAdjustmentDescription` is the primary signal: when Microsoft names Extended Service
+//! Terms on the line, that is the finding, and the price ratio is corroboration. Microsoft
+//! does not always populate the prose, so a bare `EffectiveUnitPrice / UnitPrice` of `1.03`
+//! also fires — suggestively, not as proof.
 //!
-//! 1. **Declared** — `PriceAdjustmentDescription` names Extended Service Terms. The rate is
-//!    read out of the text when it is there.
-//! 2. **PriceRatio** — `EffectiveUnitPrice / UnitPrice` lands on `1.03` or `1.23` within
-//!    tolerance.
+//! | Prose | Ratio | Kind | Confidence |
+//! |---|---|---|---|
+//! | yes | `1.03` | [`DeclaredAndPriced`](EstEvidenceKind::DeclaredAndPriced) | 1.00 |
+//! | yes | no usable `UnitPrice` | [`Declared`](EstEvidenceKind::Declared) | 1.00 |
+//! | yes | present, not `1.03` | [`DeclaredNotCorroborated`](EstEvidenceKind::DeclaredNotCorroborated) | 0.90 |
+//! | no | `1.03` | [`PriceRatio`](EstEvidenceKind::PriceRatio) | 0.75 |
+//! | no | anything else | not a finding | — |
 //!
-//! Both firing is the strong case (`confidence 1.00`). Ratio alone is suggestive but not
-//! proof — some other adjustment could coincidentally land on the same multiple — so it is
-//! reported at `0.75` and labelled as such in the UI rather than being hidden.
+//! The third row is the one worth understanding. The declaration is authoritative, so the
+//! finding stands, but `UnitPrice` is not the monthly list the surcharge was computed
+//! against — most often because it still carries the pre-EST annual rate. The base is then
+//! derived as `EffectiveUnitPrice / 1.03` rather than read from the file, which under-claims
+//! instead of billing the partner's own discount loss back to them as a Microsoft fee.
 //!
 //! # Rates live in a table, not in the code
 //!
-//! Microsoft has changed the grace-period rules once and will change these percentages
+//! Microsoft has changed the grace-period rules once and will change this percentage
 //! eventually. [`EstPolicy::table`] is versioned by effective date so that reprocessing a
 //! February file does not apply August's rules to it.
 
@@ -41,10 +65,10 @@ use rust_decimal_macros::dec;
 use crate::numeric::first_percentage;
 use crate::types::{ReconRow, RemediationWindow, TermDuration};
 
-/// One uplift rate that EST can apply.
+/// One surcharge rate that EST can apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EstRate {
-    /// Fraction over list, e.g. `0.23`.
+    /// Fraction over **monthly list**, e.g. `0.03`. Not the cross-cycle cost jump.
     pub rate: Decimal,
     /// Why this rate applies. Shown verbatim to the user.
     pub reason: &'static str,
@@ -58,7 +82,11 @@ pub struct EstRate {
 pub struct EstPolicy {
     /// First charge date this policy applies to.
     pub effective_from: NaiveDate,
-    /// Uplift rates in force.
+    /// Surcharge rates in force over monthly list price.
+    ///
+    /// A `Vec` because a future policy row may introduce a second band, not because one is
+    /// in force today: as of 4 May 2026 there is exactly one, and adding a `1.23` entry to
+    /// model the annual-to-monthly cost jump would be wrong — see the module docs.
     pub rates: Vec<EstRate>,
     /// How far `EffectiveUnitPrice / UnitPrice` may sit from `1 + rate` and still count.
     /// Absorbs Microsoft's own rounding, nothing more.
@@ -78,10 +106,10 @@ impl EstPolicy {
         vec![EstPolicy {
             // Grace period abolished, Extended Service Terms introduced.
             effective_from: NaiveDate::from_ymd_opt(2026, 5, 4).expect("valid date"),
-            rates: vec![
-                EstRate { rate: dec!(0.03), reason: "monthly plan available for this SKU" },
-                EstRate { rate: dec!(0.23), reason: "no monthly plan exists for this SKU" },
-            ],
+            rates: vec![EstRate {
+                rate: dec!(0.03),
+                reason: "Extended Service Term surcharge over monthly list price",
+            }],
             ratio_tolerance: dec!(0.0005),
             description_markers: &["extended service terms", "extended service term", "est fee"],
             noise_threshold_monthly: dec!(5),
@@ -102,6 +130,21 @@ impl EstPolicy {
     fn rate_for(&self, value: Decimal) -> Option<EstRate> {
         self.rates.iter().copied().find(|r| (r.rate - value).abs() <= self.ratio_tolerance)
     }
+
+    /// Rate named in `PriceAdjustmentDescription`, when the figure quoted there is one this
+    /// policy actually knows.
+    ///
+    /// A number in the prose is not authority to invent a rate. Text quoting `23%` — the
+    /// cross-cycle cost jump rather than the surcharge — matches nothing and falls through
+    /// to the configured surcharge, which is the conservative answer.
+    fn rate_from_description(&self, description: &str) -> Option<EstRate> {
+        first_percentage(description).map(|p| p / dec!(100)).and_then(|p| self.rate_for(p))
+    }
+
+    /// The surcharge to fall back on when the line declares EST without a usable rate.
+    fn default_rate(&self) -> Option<EstRate> {
+        self.rates.first().copied()
+    }
 }
 
 /// Which signal fired.
@@ -109,8 +152,14 @@ impl EstPolicy {
 pub enum EstEvidenceKind {
     /// `PriceAdjustmentDescription` said so, and the price ratio agrees.
     DeclaredAndPriced,
-    /// `PriceAdjustmentDescription` said so; `UnitPrice` was missing or did not corroborate.
+    /// `PriceAdjustmentDescription` said so and there was no usable `UnitPrice` to check it
+    /// against. The declaration is the proof; a missing column is a gap in the file, not a
+    /// reason to doubt Microsoft's own statement about its own charge.
     Declared,
+    /// `PriceAdjustmentDescription` said so, but `UnitPrice` is present and is not `1.03`
+    /// below the effective price — typically because it still carries the pre-EST annual
+    /// rate. The finding stands on the declaration; the base price is derived, not read.
+    DeclaredNotCorroborated,
     /// Price ratio only. Suggestive, not proof.
     PriceRatio,
 }
@@ -119,8 +168,8 @@ impl EstEvidenceKind {
     /// Confidence attached to a finding from this signal.
     pub fn confidence(self) -> Decimal {
         match self {
-            EstEvidenceKind::DeclaredAndPriced => dec!(1.00),
-            EstEvidenceKind::Declared => dec!(0.90),
+            EstEvidenceKind::DeclaredAndPriced | EstEvidenceKind::Declared => dec!(1.00),
+            EstEvidenceKind::DeclaredNotCorroborated => dec!(0.90),
             EstEvidenceKind::PriceRatio => dec!(0.75),
         }
     }
@@ -129,6 +178,7 @@ impl EstEvidenceKind {
         match self {
             EstEvidenceKind::DeclaredAndPriced => "declared_and_priced",
             EstEvidenceKind::Declared => "declared",
+            EstEvidenceKind::DeclaredNotCorroborated => "declared_not_corroborated",
             EstEvidenceKind::PriceRatio => "price_ratio",
         }
     }
@@ -152,11 +202,12 @@ pub struct EstFinding {
     pub charge_end_date: Option<NaiveDate>,
     pub term_duration: TermDuration,
 
-    /// The uplift fraction, e.g. `0.23`.
+    /// The surcharge fraction over monthly list, e.g. `0.03`.
     pub rate: Decimal,
     /// Why that rate applies.
     pub reason: &'static str,
-    /// List price the uplift was applied to.
+    /// Monthly list price the surcharge was applied to. Read from `UnitPrice` when the ratio
+    /// corroborates it, derived as `effective / (1 + rate)` otherwise.
     pub base_unit_price: Decimal,
     /// What was actually charged.
     pub effective_unit_price: Decimal,
@@ -308,34 +359,40 @@ impl EstDetector {
         let description = row.price_adjustment_description.to_ascii_lowercase();
         let declared = self.policy.description_markers.iter().any(|m| description.contains(m));
 
-        // Ratio signal: how far above list was this line actually charged?
-        let ratio_rate = row
-            .unit_price
-            .filter(|list| *list > Decimal::ZERO)
+        // Ratio signal: how far above monthly list was this line actually charged? Only
+        // `1.03` counts. A larger gap is the annual-to-monthly repricing, which is not a fee.
+        let list_price = row.unit_price.filter(|list| *list > Decimal::ZERO);
+        let ratio_rate = list_price
             .map(|list| (effective - list) / list)
             .and_then(|excess| self.policy.rate_for(excess));
 
         let (rate_info, kind) = match (declared, ratio_rate) {
             (true, Some(r)) => (r, EstEvidenceKind::DeclaredAndPriced),
-            // Declared but the price does not corroborate: trust the declaration and take
-            // the rate from the prose, falling back to the smallest configured rate so we
-            // under-claim rather than over-claim.
+            // Declared, but the ratio does not corroborate. Trust the declaration, take the
+            // rate from the prose when it quotes one this policy recognises, and otherwise
+            // fall back to the configured surcharge so we under-claim rather than over-claim.
             (true, None) => {
-                let from_text = first_percentage(&description)
-                    .map(|p| p / dec!(100))
-                    .and_then(|p| self.policy.rate_for(p));
-                match from_text {
-                    Some(r) => (r, EstEvidenceKind::Declared),
-                    None => (*self.policy.rates.first()?, EstEvidenceKind::Declared),
-                }
+                let rate = self
+                    .policy
+                    .rate_from_description(&description)
+                    .or_else(|| self.policy.default_rate())?;
+                let kind = if list_price.is_some() {
+                    EstEvidenceKind::DeclaredNotCorroborated
+                } else {
+                    EstEvidenceKind::Declared
+                };
+                (rate, kind)
             }
             (false, Some(r)) => (r, EstEvidenceKind::PriceRatio),
             (false, None) => return None,
         };
 
-        // Prefer the list price the file gives us; derive it only when we have to.
-        let base_unit_price = match row.unit_price {
-            Some(list) if list > Decimal::ZERO && kind != EstEvidenceKind::Declared => list,
+        // Take the file's list price only when the ratio confirmed it is the monthly list the
+        // surcharge was computed against. Otherwise derive the base from the surcharge:
+        // `effective - UnitPrice` on an uncorroborated line is the discount loss, and
+        // reporting that as an EST fee would overstate the finding several times over.
+        let base_unit_price = match (kind, list_price) {
+            (EstEvidenceKind::DeclaredAndPriced | EstEvidenceKind::PriceRatio, Some(list)) => list,
             _ => effective / (Decimal::ONE + rate_info.rate),
         };
         let uplift_per_seat = effective - base_unit_price;
@@ -507,47 +564,94 @@ mod tests {
 
     #[test]
     fn declared_and_priced_is_the_strong_case() {
-        let f = single(&row(
-            dec!(36.90),
-            dec!(30.00),
-            dec!(10),
-            "Extended Service Terms 23% Fee Applied",
-        ))
-        .expect("finding");
-        assert_eq!(f.rate, dec!(0.23));
+        let f =
+            single(&row(dec!(4.12), dec!(4.00), dec!(50), "Extended Service Terms 3% Fee Applied"))
+                .expect("finding");
+        assert_eq!(f.rate, dec!(0.03));
         assert_eq!(f.evidence_kind, EstEvidenceKind::DeclaredAndPriced);
         assert_eq!(f.confidence, dec!(1.00));
-        assert_eq!(f.uplift_amount, dec!(69.00));
-        assert_eq!(f.monthly_run_rate, dec!(69.00));
+        assert_eq!(f.base_unit_price, dec!(4.00));
+        assert_eq!(f.uplift_amount, dec!(6.00));
+        assert_eq!(f.monthly_run_rate, dec!(6.00));
         assert_eq!(f.remediation_window, RemediationWindow::Now);
     }
 
     #[test]
     fn price_ratio_alone_still_fires_at_lower_confidence() {
-        let f = single(&row(dec!(18.45), dec!(15.00), dec!(4), "")).expect("finding");
-        assert_eq!(f.rate, dec!(0.23));
+        let f = single(&row(dec!(15.45), dec!(15.00), dec!(40), "")).expect("finding");
+        assert_eq!(f.rate, dec!(0.03));
         assert_eq!(f.evidence_kind, EstEvidenceKind::PriceRatio);
         assert_eq!(f.confidence, dec!(0.75));
-        assert_eq!(f.uplift_amount, dec!(13.80));
+        assert_eq!(f.uplift_amount, dec!(18.00));
     }
 
     #[test]
     fn declared_without_a_list_price_derives_the_base() {
-        let mut r = row(dec!(36.90), dec!(0), dec!(10), "Extended Service Terms 23% Fee Applied");
+        let mut r = row(dec!(41.20), dec!(0), dec!(10), "Extended Service Terms 3% Fee Applied");
         r.unit_price = None;
         let f = single(&r).expect("finding");
         assert_eq!(f.evidence_kind, EstEvidenceKind::Declared);
-        assert_eq!(f.base_unit_price, dec!(30));
-        assert_eq!(f.uplift_amount, dec!(69.00));
+        // Nothing in the file contradicts Microsoft's own statement, so this is not hedged.
+        assert_eq!(f.confidence, dec!(1.00));
+        assert_eq!(f.base_unit_price, dec!(40));
+        assert_eq!(f.uplift_amount, dec!(12.00));
+    }
+
+    /// The case the old `1.23` band got wrong.
+    ///
+    /// `UnitPrice` here is the pre-EST annual rate, so the line sits 23.6% above it. That gap
+    /// is the lost annual discount, not a Microsoft fee. Only the 3% surcharge is ours to
+    /// claim: 30.90 / 1.03 = 30.00 monthly list, 0.90/seat, 9.00 across ten seats — not the
+    /// 59.00 that reading `effective - UnitPrice` as a penalty would have produced.
+    #[test]
+    fn a_declared_line_whose_unit_price_is_not_monthly_list_claims_only_the_surcharge() {
+        let f = single(&row(
+            dec!(30.90),
+            dec!(25.00),
+            dec!(10),
+            "Extended Service Terms 3% Fee Applied",
+        ))
+        .expect("finding");
+        assert_eq!(f.evidence_kind, EstEvidenceKind::DeclaredNotCorroborated);
+        assert_eq!(f.confidence, dec!(0.90));
+        assert_eq!(f.rate, dec!(0.03));
+        assert_eq!(f.base_unit_price, dec!(30.00));
+        assert_eq!(f.uplift_per_seat, dec!(0.90));
+        assert_eq!(f.uplift_amount, dec!(9.00));
+    }
+
+    /// A percentage in the prose is not authority to invent a rate.
+    #[test]
+    fn prose_quoting_the_cross_cycle_jump_does_not_become_a_twenty_three_percent_rate() {
+        let f = single(&row(
+            dec!(30.90),
+            dec!(25.00),
+            dec!(10),
+            "Extended Service Terms 23% Fee Applied",
+        ))
+        .expect("finding");
+        assert_eq!(f.rate, dec!(0.03), "23% is the cost jump, not the surcharge");
+        assert_eq!(f.uplift_amount, dec!(9.00));
     }
 
     #[test]
     fn ordinary_lines_do_not_fire() {
         assert!(single(&row(dec!(22), dec!(22), dec!(25), "")).is_none());
-        // An expired promo is a price jump, but not a 3%/23% one.
+        // An expired promo is a price jump, but not a 3% one.
         assert!(single(&row(dec!(14), dec!(10), dec!(30), "")).is_none());
         // A discount is not an uplift.
         assert!(single(&row(dec!(10), dec!(14), dec!(30), "")).is_none());
+    }
+
+    /// The regression that motivated removing the `1.23` band.
+    ///
+    /// An undeclared line sitting 23% over its own `UnitPrice` is an annual-to-monthly
+    /// reprice, a promo expiry, or a catalogue change. It is not evidence of an EST fee, and
+    /// firing on it invented roughly eight times the money that was actually surcharged.
+    #[test]
+    fn an_undeclared_twenty_three_percent_ratio_is_not_an_est_finding() {
+        assert!(single(&row(dec!(18.45), dec!(15.00), dec!(4), "")).is_none());
+        assert!(single(&row(dec!(36.90), dec!(30.00), dec!(10), "")).is_none());
     }
 
     #[test]
@@ -609,6 +713,9 @@ mod tests {
     fn the_policy_table_is_keyed_by_date() {
         assert!(EstPolicy::for_date(NaiveDate::from_ymd_opt(2026, 5, 3).unwrap()).is_none());
         assert!(EstPolicy::for_date(NaiveDate::from_ymd_opt(2026, 5, 4).unwrap()).is_some());
-        assert_eq!(EstPolicy::current().rates.len(), 2);
+        // Exactly one band, and it is the surcharge. See the module docs on why there is no
+        // second one.
+        assert_eq!(EstPolicy::current().rates.len(), 1);
+        assert_eq!(EstPolicy::current().rates[0].rate, dec!(0.03));
     }
 }

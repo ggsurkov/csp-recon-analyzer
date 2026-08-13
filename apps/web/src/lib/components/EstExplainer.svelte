@@ -26,7 +26,7 @@
     {
       href: 'https://learn.microsoft.com/en-us/partner-center/customers/extended-service-terms',
       title: 'Use Extended Service Terms (EST) for CSP subscriptions',
-      note: 'The primary reference. States the +3% / +23% uplift and the three end-of-term options.'
+      note: 'The primary reference. States the monthly-list repricing, the +3% surcharge and the three end-of-term options.'
     },
     {
       href: 'https://learn.microsoft.com/en-us/partner-center/customers/extended-service-terms#billing-and-recon-files-for-est',
@@ -63,7 +63,7 @@
     <span
       class="ml-auto hidden shrink-0 rounded-full bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-300 sm:inline"
     >
-      +3% / +23%
+      +3% surcharge
     </span>
   </summary>
 
@@ -76,16 +76,16 @@
         Until <span class="text-slate-200">4 May 2026</span>, a CSP subscription that reached its
         end date without being renewed dropped into a <em>free</em> 30-day grace period. Microsoft
         removed that. A subscription in the same state now rolls onto an
-        <span class="text-slate-200">Extended Service Term</span> &mdash; a monthly term charged
-        above list:
+        <span class="text-slate-200">Extended Service Term</span>: it is repriced onto the standard
+        <em>monthly</em> list price and charged a surcharge on top of that.
       </p>
 
       <div class="overflow-x-auto">
         <table class="w-full min-w-[26rem] text-left">
           <thead class="text-xs uppercase tracking-wider text-slate-500">
             <tr>
-              <th scope="col" class="py-2 pr-4 font-medium">Uplift</th>
-              <th scope="col" class="py-2 font-medium">When it applies</th>
+              <th scope="col" class="py-2 pr-4 font-medium">Figure</th>
+              <th scope="col" class="py-2 font-medium">What it is</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-800">
@@ -96,16 +96,24 @@
                   >+3%</span
                 >
               </td>
-              <td class="py-2 align-top">The SKU has a monthly plan available.</td>
+              <td class="py-2 align-top">
+                The EST surcharge itself, applied over monthly list price. This is the whole fee,
+                and it is what this tool reports.
+              </td>
             </tr>
             <tr>
               <td class="py-2 pr-4 align-top">
                 <span
-                  class="rounded bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-300"
-                  >+23%</span
+                  class="rounded bg-slate-700/50 px-2 py-0.5 text-xs font-semibold text-slate-300"
+                  >~23%+</span
                 >
               </td>
-              <td class="py-2 align-top">No monthly plan exists for that SKU.</td>
+              <td class="py-2 align-top">
+                The effective jump on your invoice when a subscription moves off an
+                <em>annual</em> commitment — roughly 20% of it is the annual discount you no longer
+                get, not a Microsoft fee. It is a comparison against last cycle, so it is not
+                visible inside a single recon line.
+              </td>
             </tr>
           </tbody>
         </table>

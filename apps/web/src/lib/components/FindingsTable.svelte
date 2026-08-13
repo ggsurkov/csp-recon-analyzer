@@ -79,8 +79,12 @@
   }
 
   function confidenceTone(finding: Finding): string {
+    // Microsoft stated it and the price agrees, or stated it with no list price to check
+    // against: either way the declaration is the proof.
     if (finding.evidence_kind === 'declared_and_priced') return 'bg-emerald-500/15 text-emerald-300';
     if (finding.evidence_kind === 'declared') return 'bg-sky-500/15 text-sky-300';
+    // Declared but UnitPrice is not monthly list, or inferred from the ratio alone. Both
+    // carry a caveat the reader needs to see before acting.
     return 'bg-amber-500/15 text-amber-300';
   }
 

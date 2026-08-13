@@ -32,7 +32,10 @@ Deliberate edge cases baked into the output
 
 Findings the fixture is built to trigger
 ----------------------------------------
-EST_UPLIFT   : S2 (+3%, $6.00), S3 (+23%, $69.00), S10 (+23% implicit, $13.80),
+EST_UPLIFT   : S2 (+3% declared and corroborated, $6.00),
+               S3 (+3% declared, UnitPrice is the pre-EST annual rate so the ratio does
+                   not corroborate — $9.00, NOT the $59.00 a naive delta would claim),
+               S10 (+3% inferred from the ratio alone, no prose, $18.00),
                S11 (+3%, $0.06 — below the $5/mo noise gate, must be suppressed)
 DUPLICATE_SUB: Contoso holds M365 Business Premium on both S1 and S7
 PROMO_EXPIRED: S8 Power BI Pro jumps 10.00 -> 14.00 between June and July
@@ -289,17 +292,20 @@ ROWS: list[list[str]] = [
         price_adjustment="Extended Service Terms 3% Fee Applied",
         reference_id="8a7b6c5d-0000-4000-8000-0000000000a2",
     ),
-    # 3. EST +23%: SKU with no monthly plan. Lowercase charge type on purpose.
-    #    30.00 -> 36.90 across 10 seats = $69.00/mo.
+    # 3. EST declared, but UnitPrice still carries the pre-EST *annual* rate (25.00) rather
+    #    than monthly list. The line therefore sits 23.6% above its own UnitPrice — which is
+    #    the lost annual discount, not a Microsoft fee. Monthly list is 30.90 / 1.03 = 30.00,
+    #    so the surcharge is 0.90/seat = $9.00/mo. A detector reading effective - UnitPrice
+    #    as the penalty would claim $59.00. Lowercase charge type on purpose.
     row(
         customer="fabrikam", product="proj_p3", subscription_id=S3, order_id="ORD-0003",
         charge_start=FULL_MONTH[0], charge_end=FULL_MONTH[1],
         term="Monthly term, Monthly billing",
-        effective_unit_price="36.900000000000000000", unit_price="30.000000000000000000",
+        effective_unit_price="30.900000000000000000", unit_price="25.000000000000000000",
         quantity="10.0000", billable_quantity="10.0000",
-        subtotal="369.000000000000000000", total="369.000000000000000000",
+        subtotal="309.000000000000000000", total="309.000000000000000000",
         charge_type="cyclecharge",
-        price_adjustment="Extended Service Terms 23% Fee Applied",
+        price_adjustment="Extended Service Terms 3% Fee Applied",
         reference_id="8a7b6c5d-0000-4000-8000-0000000000a3",
     ),
     # 4. Mid-cycle removeQuantity: 2 seats dropped on day 12 of a 31-day cycle.
@@ -396,16 +402,16 @@ ROWS: list[list[str]] = [
         sub_start="2026-07-01T00:00:00Z", sub_end="2027-06-30T00:00:00Z",
         reference_id="8a7b6c5d-0000-4000-8000-0000000000ab",
     ),
-    # 12. EST +23% with NO PriceAdjustmentDescription — Microsoft does not always
-    #     populate it. Detection must fall back to the 15.00 -> 18.45 price ratio.
-    #     3.45 * 4 = $13.80/mo.
+    # 12. EST +3% with NO PriceAdjustmentDescription — Microsoft does not always populate
+    #     it. Detection must fall back to the 15.00 -> 15.45 price ratio, at the reduced
+    #     confidence that inference earns. 0.45 * 40 = $18.00/mo.
     row(
         customer="northwind", product="teams_phone", subscription_id=S10, order_id="ORD-0012",
         charge_start=FULL_MONTH[0], charge_end=FULL_MONTH[1],
         term="Monthly term, Monthly billing",
-        effective_unit_price="18.450000000000000000", unit_price="15.000000000000000000",
-        quantity="4.0000", billable_quantity="4.0000",
-        subtotal="73.800000000000000000", total="73.800000000000000000",
+        effective_unit_price="15.450000000000000000", unit_price="15.000000000000000000",
+        quantity="40.0000", billable_quantity="40.0000",
+        subtotal="618.000000000000000000", total="618.000000000000000000",
         charge_type="cycleCharge",
         reference_id="8a7b6c5d-0000-4000-8000-0000000000ac",
     ),

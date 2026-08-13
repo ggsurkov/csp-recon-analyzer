@@ -264,31 +264,38 @@ fn est_report() -> Option<recon_core::detectors::est::EstReport> {
     Some(est.finish())
 }
 
+/// S3 is the line where `UnitPrice` is not monthly list, and it is the whole reason the
+/// `1.23` band was removed.
+///
+/// Project Plan 3 charged at 30.90 against a `UnitPrice` of 25.00 — the pre-EST annual rate.
+/// The naive reading is a 23.6% penalty worth 59.00/month. The truth is that monthly list is
+/// 30.90 / 1.03 = 30.00 and Microsoft surcharged 0.90/seat, so 9.00/month. The rest of that
+/// gap is the annual discount the partner lost, which is real money and is not a fee.
 #[test]
-fn est_finds_the_twenty_three_percent_penalty() {
+fn est_claims_only_the_surcharge_when_unit_price_is_not_monthly_list() {
     let report = match est_report() {
         Some(r) => r,
         None => return,
     };
 
-    // S3: Project Plan 3, list 30.00 -> charged 36.90, 10 seats.
-    // 36.90 - 30.00 = 6.90/seat; 6.90 * 10 = 69.00 for a 31-day cycle.
     let f = report
         .findings
         .iter()
         .find(|f| f.subscription_id.ends_with("0003"))
-        .expect("the 23% line must be found");
+        .expect("the declared EST line must be found");
 
-    assert_eq!(f.rate, dec!(0.23));
-    assert_eq!(f.reason, "no monthly plan exists for this SKU");
-    assert_eq!(f.base_unit_price, dec!(30));
-    assert_eq!(f.effective_unit_price, dec!(36.90));
-    assert_eq!(f.uplift_per_seat, dec!(6.90));
+    assert_eq!(f.rate, dec!(0.03));
+    assert_eq!(f.reason, "Extended Service Term surcharge over monthly list price");
+    assert_eq!(f.effective_unit_price, dec!(30.90));
+    // Derived from the surcharge, not read from `UnitPrice`.
+    assert_eq!(f.base_unit_price, dec!(30.00));
+    assert_eq!(f.uplift_per_seat, dec!(0.90));
     assert_eq!(f.billable_quantity, dec!(10));
-    assert_eq!(f.uplift_amount, dec!(69.00));
-    assert_eq!(f.monthly_run_rate, dec!(69.00));
-    assert_eq!(f.evidence_kind, EstEvidenceKind::DeclaredAndPriced);
-    assert_eq!(f.confidence, dec!(1.00));
+    assert_eq!(f.uplift_amount, dec!(9.00));
+    assert_eq!(f.monthly_run_rate, dec!(9.00));
+    // Declared by Microsoft, but the file's own list price does not corroborate it.
+    assert_eq!(f.evidence_kind, EstEvidenceKind::DeclaredNotCorroborated);
+    assert_eq!(f.confidence, dec!(0.90));
     assert_eq!(f.customer_name, "Fabrikam, Inc.");
     assert_eq!(f.sku_name, "Project Plan 3");
     // EST rolls the subscription onto a monthly term, so this is fixable today.
@@ -307,10 +314,13 @@ fn est_finds_the_three_percent_penalty() {
     // S2: Exchange Online P1, 4.00 -> 4.12, 50 seats = 6.00/month.
     let f = report.findings.iter().find(|f| f.subscription_id.ends_with("0002")).expect("3% line");
     assert_eq!(f.rate, dec!(0.03));
-    assert_eq!(f.reason, "monthly plan available for this SKU");
+    assert_eq!(f.reason, "Extended Service Term surcharge over monthly list price");
+    // Here `UnitPrice` really is monthly list, so it is used rather than derived.
+    assert_eq!(f.base_unit_price, dec!(4.00));
     assert_eq!(f.uplift_per_seat, dec!(0.12));
     assert_eq!(f.uplift_amount, dec!(6.00));
     assert_eq!(f.evidence_kind, EstEvidenceKind::DeclaredAndPriced);
+    assert_eq!(f.confidence, dec!(1.00));
 }
 
 #[test]
@@ -320,11 +330,11 @@ fn est_detects_an_undeclared_uplift_from_the_price_ratio_alone() {
         None => return,
     };
 
-    // S10 carries no PriceAdjustmentDescription: 15.00 -> 18.45 across 4 seats = 13.80.
+    // S10 carries no PriceAdjustmentDescription: 15.00 -> 15.45 across 40 seats = 18.00.
     let f =
         report.findings.iter().find(|f| f.subscription_id.ends_with("0010")).expect("ratio line");
-    assert_eq!(f.rate, dec!(0.23));
-    assert_eq!(f.uplift_amount, dec!(13.80));
+    assert_eq!(f.rate, dec!(0.03));
+    assert_eq!(f.uplift_amount, dec!(18.00));
     assert_eq!(f.evidence_kind, EstEvidenceKind::PriceRatio);
     assert!(f.price_adjustment_description.is_empty());
     // Ratio-only is suggestive, not proof, and must say so rather than claim certainty.
@@ -338,13 +348,13 @@ fn est_totals_are_exact_and_the_noise_gate_holds() {
         None => return,
     };
 
-    // Four EST lines in the file: 6.00 + 69.00 + 13.80 + 0.06.
+    // Four EST lines in the file: 6.00 + 9.00 + 18.00 + 0.06.
     assert_eq!(report.findings.len(), 4);
     assert_eq!(report.subscriptions.len(), 4);
 
-    // 6.00 + 69.00 + 13.80 — S11's 0.06/month is below the $5 gate.
-    assert_eq!(report.total_monthly_run_rate, dec!(88.80));
-    assert_eq!(report.total_uplift_amount, dec!(88.80));
+    // 6.00 + 9.00 + 18.00 — S11's 0.06/month is below the $5 gate.
+    assert_eq!(report.total_monthly_run_rate, dec!(33.00));
+    assert_eq!(report.total_uplift_amount, dec!(33.00));
     assert_eq!(report.noise_threshold_monthly, dec!(5));
 
     assert_eq!(report.suppressed_subscription_count, 1);
@@ -355,7 +365,7 @@ fn est_totals_are_exact_and_the_noise_gate_holds() {
 
     // Ranked by what it costs, largest first.
     let ranked: Vec<Decimal> = report.reportable().map(|s| s.monthly_run_rate).collect();
-    assert_eq!(ranked, vec![dec!(69.00), dec!(13.80), dec!(6.00)]);
+    assert_eq!(ranked, vec![dec!(18.00), dec!(9.00), dec!(6.00)]);
 }
 
 #[test]
