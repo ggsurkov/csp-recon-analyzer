@@ -81,9 +81,9 @@ pub struct FindingView {
     pub charge_start_date: Option<String>,
     pub charge_end_date: Option<String>,
 
-    /// `"23"` — the uplift as whole percent.
+    /// `"3"` — the surcharge as whole percent. Never the cross-cycle cost jump.
     pub rate_percent: String,
-    /// `"+23%"` — ready to render.
+    /// `"+3%"` — ready to render.
     pub rate_label: String,
     /// Why that rate applies.
     pub reason: String,
@@ -101,7 +101,8 @@ pub struct FindingView {
     pub confidence: String,
     /// Plain-language version of the above.
     pub confidence_label: String,
-    /// Which signal fired: `declared_and_priced` | `declared` | `price_ratio`.
+    /// Which signal fired: `declared_and_priced` | `declared` | `declared_not_corroborated`
+    /// | `price_ratio`.
     pub evidence_kind: String,
     /// `PriceAdjustmentDescription` verbatim; empty when detection was ratio-only.
     pub price_adjustment_description: String,
@@ -133,7 +134,7 @@ pub struct AnalysisResult {
     pub findings: Vec<FindingView>,
     /// Distinct subscriptions behind the headline figure.
     ///
-    /// Excludes suppressed ones, so "$88.80 across N subscriptions" stays arithmetically
+    /// Excludes suppressed ones, so "$33.00 across N subscriptions" stays arithmetically
     /// true. Suppressed subscriptions are counted separately, above.
     pub reportable_subscription_count: usize,
 
@@ -437,7 +438,10 @@ fn confidence_label(kind: EstEvidenceKind) -> &'static str {
         EstEvidenceKind::DeclaredAndPriced => {
             "Confirmed \u{2014} stated on the line and the price agrees"
         }
-        EstEvidenceKind::Declared => "Stated by Microsoft, price not corroborated",
+        EstEvidenceKind::Declared => "Stated on the line; no list price in the file to check",
+        EstEvidenceKind::DeclaredNotCorroborated => {
+            "Stated on the line, but UnitPrice is not monthly list \u{2014} surcharge derived"
+        }
         EstEvidenceKind::PriceRatio => {
             "Inferred from the price ratio \u{2014} verify before acting"
         }
@@ -493,14 +497,14 @@ mod tests {
         assert_eq!(r.currency, "USD");
 
         // Exact value is canonical, not zero-padded; the display copy is the money-shaped one.
-        assert_eq!(r.total_est_leak_monthly.value, "88.8");
-        assert_eq!(r.total_est_leak_monthly.display, "$88.80");
+        assert_eq!(r.total_est_leak_monthly.value, "33");
+        assert_eq!(r.total_est_leak_monthly.display, "$33.00");
         assert_eq!(r.suppressed_monthly.value, "0.06");
         assert_eq!(r.suppressed_subscription_count, 1);
         assert_eq!(r.noise_threshold_monthly.display, "$5.00");
 
         assert_eq!(r.findings.len(), 4);
-        // Four subscriptions carry a finding, but only three are behind the $88.80
+        // Four subscriptions carry a finding, but only three are behind the $33.00
         // headline — the fourth is under the gate and counted separately.
         assert_eq!(r.reportable_subscription_count, 3);
 
@@ -520,7 +524,7 @@ mod tests {
         let order: Vec<&str> =
             r.findings.iter().map(|f| f.monthly_run_rate.display.as_str()).collect();
         // Costliest first; the sub-threshold line is last regardless of value.
-        assert_eq!(order, vec!["$69.00", "$13.80", "$6.00", "$0.06"]);
+        assert_eq!(order, vec!["$18.00", "$9.00", "$6.00", "$0.06"]);
         assert_eq!(
             r.findings.iter().map(|f| f.suppressed).collect::<Vec<_>>(),
             vec![false, false, false, true]
@@ -528,24 +532,40 @@ mod tests {
     }
 
     #[test]
-    fn the_twenty_three_percent_line_renders_completely() {
+    fn a_declared_line_renders_completely() {
         let r = analyze(FIXTURE).unwrap();
-        let f = &r.findings[0];
+        let f = r.findings.iter().find(|f| f.subscription_id.ends_with("0003")).unwrap();
 
         assert_eq!(f.customer_name, "Fabrikam, Inc.");
         assert_eq!(f.sku_name, "Project Plan 3");
-        assert_eq!(f.rate_label, "+23%");
-        assert_eq!(f.effective_unit_price.display, "$36.90");
+        // The surcharge, not the 23.6% gap between the charge and the annual rate in
+        // `UnitPrice`. Rendering "+23%" here would be a claim Microsoft never made.
+        assert_eq!(f.rate_label, "+3%");
+        assert_eq!(f.effective_unit_price.display, "$30.90");
         assert_eq!(f.base_unit_price.display, "$30.00");
-        assert_eq!(f.uplift_per_seat.display, "$6.90");
+        assert_eq!(f.uplift_per_seat.display, "$0.90");
         assert_eq!(f.billable_quantity, "10");
-        assert_eq!(f.monthly_run_rate.display, "$69.00");
-        assert_eq!(f.confidence, "1.00");
-        assert_eq!(f.evidence_kind, "declared_and_priced");
+        assert_eq!(f.monthly_run_rate.display, "$9.00");
+        assert_eq!(f.confidence, "0.90");
+        assert_eq!(f.evidence_kind, "declared_not_corroborated");
+        assert!(f.confidence_label.contains("not monthly list"));
         assert_eq!(f.remediation_window, "NOW");
         assert!(f.action.starts_with("Cancel or move onto a committed term"));
         // Every row in the table can be traced back to a line in the file.
         assert_eq!(f.record_index, 2);
+    }
+
+    #[test]
+    fn a_corroborated_line_renders_at_full_confidence() {
+        let r = analyze(FIXTURE).unwrap();
+        let f = r.findings.iter().find(|f| f.subscription_id.ends_with("0002")).unwrap();
+
+        assert_eq!(f.rate_label, "+3%");
+        assert_eq!(f.base_unit_price.display, "$4.00");
+        assert_eq!(f.effective_unit_price.display, "$4.12");
+        assert_eq!(f.monthly_run_rate.display, "$6.00");
+        assert_eq!(f.confidence, "1.00");
+        assert_eq!(f.evidence_kind, "declared_and_priced");
     }
 
     #[test]
@@ -561,16 +581,16 @@ mod tests {
     fn plain_csv_is_accepted_too() {
         let csv = "CustomerId,SubscriptionId,ChargeType,EffectiveUnitPrice,UnitPrice,\
                    BillableQuantity,Currency,ChargeStartDate,ChargeEndDate,TermAndBillingCycle\r\n\
-                   C1,S1,cycleCharge,'12.30,'10.00,'20,USD,2026-07-01,2026-07-31,\
+                   C1,S1,cycleCharge,'10.30,'10.00,'20,USD,2026-07-01,2026-07-31,\
                    \"Monthly term, Monthly billing\"\r\n";
         let r = analyze(csv.as_bytes()).unwrap();
         assert_eq!(r.rows_parsed, 1);
-        // 2.30 * 20 = 46.00
-        assert_eq!(r.total_est_leak_monthly.display, "$46.00");
-        assert_eq!(r.findings[0].rate_label, "+23%");
+        // 0.30 * 20 = 6.00
+        assert_eq!(r.total_est_leak_monthly.display, "$6.00");
+        assert_eq!(r.findings[0].rate_label, "+3%");
     }
 
-    /// A CSV with `rows` data rows, all of them EST +23% lines worth well over the gate.
+    /// A CSV with `rows` data rows, all of them EST +3% lines worth well over the gate.
     fn est_csv(rows: usize) -> String {
         let mut s = String::from(
             "CustomerId,SubscriptionId,ChargeType,EffectiveUnitPrice,UnitPrice,\
@@ -578,7 +598,7 @@ mod tests {
         );
         for i in 0..rows {
             s.push_str(&format!(
-                "C{i},S{i},cycleCharge,'12.30,'10.00,'20,USD,2026-07-01,2026-07-31,\
+                "C{i},S{i},cycleCharge,'10.30,'10.00,'20,USD,2026-07-01,2026-07-31,\
                  \"Monthly term, Monthly billing\"\r\n"
             ));
         }
@@ -674,11 +694,15 @@ mod tests {
     #[test]
     fn phase_names_match_the_typescript_union() {
         // These strings are the wire contract with apps/web/src/lib/types.ts.
-        let names: Vec<String> = [Phase::Reading, Phase::Parsing, Phase::EstDetection, Phase::Finalizing]
-            .iter()
-            .map(|p| serde_json::to_string(p).unwrap())
-            .collect();
-        assert_eq!(names, vec!["\"READING\"", "\"PARSING\"", "\"EST_DETECTION\"", "\"FINALIZING\""]);
+        let names: Vec<String> =
+            [Phase::Reading, Phase::Parsing, Phase::EstDetection, Phase::Finalizing]
+                .iter()
+                .map(|p| serde_json::to_string(p).unwrap())
+                .collect();
+        assert_eq!(
+            names,
+            vec!["\"READING\"", "\"PARSING\"", "\"EST_DETECTION\"", "\"FINALIZING\""]
+        );
         assert_eq!(Phase::EstDetection.as_str(), "EST_DETECTION");
     }
 
